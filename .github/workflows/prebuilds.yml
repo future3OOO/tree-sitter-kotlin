@@ -1,0 +1,76 @@
+name: Prebuilds
+
+# Builds N-API prebuilt binaries for every platform and commits them to the
+# triggering branch, so consumers that install with ignore-scripts or without a
+# C++ toolchain can load the grammar (node-gyp-build picks prebuilds/ up at
+# require time).
+
+on:
+  workflow_dispatch:
+  push:
+    branches: ['prebuilds-*']
+    paths-ignore: ['prebuilds/**']
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            arch: x64
+          - os: ubuntu-24.04-arm
+            arch: arm64
+          - os: macos-15-intel
+            arch: x64
+          - os: macos-14
+            arch: arm64
+          - os: windows-2022
+            arch: x64
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Install build dependencies
+        run: npm install --ignore-scripts --no-audit --no-fund
+      - name: Use a current node-gyp
+        shell: bash
+        run: |
+          npm install --no-save --ignore-scripts --no-audit --no-fund node-gyp@latest
+          echo "npm_config_node_gyp=$PWD/node_modules/node-gyp/bin/node-gyp.js" >> "$GITHUB_ENV"
+      - name: Build prebuild
+        run: npx prebuildify --napi --strip --arch ${{ matrix.arch }}
+      - name: Verify prebuild
+        shell: bash
+        run: |
+          ls -l prebuilds/*/
+          test -n "$(ls prebuilds/*/*.node)"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: prebuild-${{ matrix.os }}-${{ matrix.arch }}
+          path: prebuilds/
+          if-no-files-found: error
+
+  commit:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: prebuild-*
+          path: prebuilds/
+          merge-multiple: true
+      - name: Commit prebuilds
+        run: |
+          ls -R prebuilds
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -f prebuilds
+          git commit -m "Add N-API prebuilds for linux, darwin and win32 (x64, arm64)"
+          git push origin HEAD:${{ github.ref_name }}
